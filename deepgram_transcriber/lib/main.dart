@@ -10,16 +10,45 @@ import 'package:permission_handler/permission_handler.dart';
 
 import 'app_logger.dart';
 import 'api_keys.dart';
+import 'auth/auth_service.dart';
+import 'screens/tenant_selection_screen.dart';
+import 'services/deepgram_service.dart';
 
 // The minimum Android SDK version for using audio is 21
 const theSource = 'deepgram_transcriber';
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
   runApp(const MyApp());
 }
 
-class MyApp extends StatelessWidget {
+class MyApp extends StatefulWidget {
   const MyApp({super.key});
+
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> {
+  final AuthService _authService = AuthService();
+  bool _isInitialized = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _initializeApp();
+  }
+
+  Future<void> _initializeApp() async {
+    try {
+      await _authService.initialize();
+      setState(() {
+        _isInitialized = true;
+      });
+    } catch (e) {
+      logger.error('Failed to initialize app', error: e);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -29,7 +58,20 @@ class MyApp extends StatelessWidget {
         primarySwatch: Colors.blue,
         useMaterial3: true,
       ),
-      home: const TranscriptionScreen(),
+      home: _isInitialized
+          ? ValueListenableBuilder<bool>(
+              valueListenable: _authService.authStateNotifier,
+              builder: (context, isAuthenticated, _) {
+                return isAuthenticated
+                    ? const TranscriptionScreen()
+                    : const TenantSelectionScreen();
+              },
+            )
+          : const Scaffold(
+              body: Center(
+                child: CircularProgressIndicator(),
+              ),
+            ),
     );
   }
 }
@@ -55,10 +97,6 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
   FlutterSoundRecorder? _mRecorder;
   bool _mRecorderIsInited = false;
   IOWebSocketChannel? _channel;
-  
-  // Base Deepgram WebSocket URL for transcription
-  final String _baseServerUrl = 
-      'wss://api.deepgram.com/v1/listen?encoding=linear16&sample_rate=16000&language=en-US';
   
   String _tempFilePath = '';
 
@@ -140,10 +178,18 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
       return;
     }
     
-    if (_apiKeyController.text.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter your Deepgram API key first')),
-      );
+    setState(() {
+      transcribedText = "Fetching Deepgram token...";
+    });
+    
+    // Get Deepgram token from the authenticated API
+    final deepgramService = DeepgramService();
+    final tokenResult = await deepgramService.getToken();
+    
+    if (tokenResult == null) {
+      setState(() {
+        transcribedText = "Failed to get Deepgram token. Please check your authentication.";
+      });
       return;
     }
     
@@ -151,15 +197,60 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
       transcribedText = "Starting transcription...";
       _lastReadPosition = 0;
       isRecording = true;
+      
+      // Update the API key field with the token for reference
+      _apiKeyController.text = tokenResult.token;
     });
     
     try {
-      // Set up WebSocket connection with Deepgram
-      final apiKey = _apiKeyController.text;
-      _channel = IOWebSocketChannel.connect(
-        Uri.parse(_baseServerUrl),
-        headers: {'Authorization': 'Token $apiKey'},
-      );
+      // Set up WebSocket connection with Deepgram using the token from the API
+      final apiKey = tokenResult.token;
+      
+      // Check if the token response includes a URL field
+      // This is important for self-hosted Deepgram instances
+      String wsUrl;
+
+      // TOOD: This should work when connecting to a working self-hosted Deepgram instance
+      // if (tokenResult.url.isNotEmpty) {
+      //   // Use the URL from the token response, converting from HTTPS to WSS
+      //   wsUrl = tokenResult.url.replaceFirst('https://', 'wss://');
+      //   logger.info('Using custom Deepgram URL from token: $wsUrl');
+      // } else {
+      //   // Fall back to the direct Deepgram SaaS URL
+      //   wsUrl = 'wss://api.deepgram.com';
+      //   logger.info('Using default Deepgram SaaS URL: $wsUrl');
+      // }
+
+      wsUrl = 'wss://api.deepgram.com';
+      logger.info('Using default Deepgram SaaS URL: $wsUrl');
+      
+      // Append the WebSocket path and parameters
+      final fullUrl = '$wsUrl/v1/listen?encoding=linear16&sample_rate=16000&language=en-US';
+      
+      logger.info('Connecting to Deepgram WebSocket: $fullUrl');
+      
+      // The Deepgram WebSocket API uses a different authentication method than our backend
+      // It requires a Token authentication in the headers, not a session cookie
+      logger.info('Using Deepgram token: ${apiKey.substring(0, 5)}... for WebSocket authentication');
+      
+      final headers = {'Authorization': 'Token $apiKey'};
+      logger.info('WebSocket headers: $headers');
+      
+      try {
+        _channel = IOWebSocketChannel.connect(
+          Uri.parse(fullUrl),
+          headers: headers,
+        );
+        
+        logger.info('WebSocket connection established');
+      } catch (e) {
+        logger.error('Error connecting to WebSocket: $e');
+        setState(() {
+          transcribedText = "Failed to connect to Deepgram: $e";
+          isRecording = false;
+        });
+        return;
+      }
 
       try {
         WakelockPlus.enable();
@@ -346,16 +437,65 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final AuthService authService = AuthService();
+    
     return Scaffold(
       appBar: AppBar(
         title: const Text('Deepgram Transcriber'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.logout),
+            tooltip: 'Logout',
+            onPressed: () {
+              authService.logout();
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Logged out successfully')),
+              );
+            },
+          ),
+        ],
       ),
       body: Column(
         children: [
-          // Status indicators row
+          // Tenant info
           Padding(
             padding: const EdgeInsets.all(8.0),
+            child: Card(
+              child: Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: Row(
+                  children: [
+                    const Icon(Icons.domain, size: 16),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text(
+                        'Tenant: ${authService.currentTenant ?? "Unknown"}',
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.green,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Text(
+                        'Authenticated',
+                        style: TextStyle(color: Colors.white, fontSize: 12),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          
+          // Status indicators row
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8.0),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -452,17 +592,19 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
             ),
           ),
                     
-          // API key input at the bottom
+          // Token display at the bottom
           Padding(
             padding: const EdgeInsets.all(16.0),
             child: TextField(
               controller: _apiKeyController,
+              readOnly: true, // Make it read-only since we get the token from the API
               decoration: const InputDecoration(
-                labelText: 'Deepgram API Key',
-                hintText: 'Paste your API key here',
+                labelText: 'Deepgram Token (Auto-fetched)',
+                hintText: 'Token will be fetched automatically when recording starts',
                 border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.vpn_key),
               ),
-              obscureText: true, // Hide API key like a password
+              obscureText: true, // Hide token like a password
             ),
           ),
         ],
