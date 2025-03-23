@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import 'app_logger.dart';
+import 'api_keys.dart';
 
 // The minimum Android SDK version for using audio is 21
 const theSource = 'deepgram_transcriber';
@@ -64,6 +65,7 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
   @override
   void initState() {
     _mRecorder = FlutterSoundRecorder();
+    _apiKeyController.text = deepgramApiKey;
     openTheRecorder().then((value) {
       setState(() {
         _mRecorderIsInited = true;
