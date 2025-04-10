@@ -107,7 +107,7 @@ class _TenantSelectionScreenState extends State<TenantSelectionScreen> {
           easyAuthProvider = 'google';
           break;
         case 'openid':
-          easyAuthProvider = 'aad'; // Azure Active Directory for OpenID
+          easyAuthProvider = 'okta';
           break;
         default:
           easyAuthProvider = authType;
