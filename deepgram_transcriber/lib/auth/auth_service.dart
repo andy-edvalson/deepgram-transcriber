@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:uni_links/uni_links.dart';
+import 'package:app_links/app_links.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import '../app_logger.dart';
@@ -21,6 +21,12 @@ class AuthService {
   String? _accessToken;
   bool _isInitialized = false;
   StreamSubscription? _deepLinkSubscription;
+  
+  // App links instance for deep linking
+  final AppLinks _appLinks = AppLinks();
+  
+  // Flag to track if we're running on web
+  final bool _isWeb = kIsWeb;
 
   // Getters
   bool get isAuthenticated => _sessionCookie != null;
@@ -37,23 +43,44 @@ class AuthService {
     if (_isInitialized) return;
 
     try {
-      // Handle initial URI if the app was opened from a deep link
-      final initialUri = await getInitialUri();
-      if (initialUri != null) {
-        await _handleDeepLink(initialUri);
+      if (!_isWeb) {
+        // Mobile platform: Use app_links for deep linking
+        
+        // Handle initial URI if the app was opened from a deep link
+        final initialUri = await _appLinks.getInitialLink();
+        if (initialUri != null) {
+          await _handleDeepLink(initialUri);
+        }
+
+        // Set up listener for deep link events
+        _deepLinkSubscription = _appLinks.uriLinkStream.listen((Uri uri) async {
+          await _handleDeepLink(uri);
+        }, onError: (error) {
+          logger.error('Deep link error', error: error);
+        });
+        
+        logger.info('Mobile deep linking initialized with app_links');
+      } else {
+        // Web platform: We'll handle authentication differently
+        logger.info('Running on web platform - using web-specific auth handling');
+        
+        // For web, we'll rely on the JavaScript in index.html to handle auth tokens
+        // and we'll check for URL parameters directly
+        
+        // Check the current URL for auth parameters
+        try {
+          final uri = Uri.base;
+          if (uri.queryParameters.containsKey('session_cookie') || 
+              uri.queryParameters.containsKey('id_token')) {
+            await _handleDeepLink(uri);
+          }
+        } catch (e) {
+          logger.error('Error checking URL parameters', error: e);
+        }
       }
 
-      // Set up listener for deep link events
-      _deepLinkSubscription = uriLinkStream.listen((Uri? uri) async {
-        if (uri != null) {
-          await _handleDeepLink(uri);
-        }
-      }, onError: (error) {
-        logger.error('Deep link error', error: error);
-      });
-
       _isInitialized = true;
-      logger.info('AuthService initialized');
+      logger.info('AuthService initialized for ${_isWeb ? 'web' : 'mobile'} platform');
     } on PlatformException catch (e) {
       logger.error('Failed to initialize AuthService', error: e);
     }
@@ -63,9 +90,11 @@ class AuthService {
   Future<void> _handleDeepLink(Uri uri) async {
     logger.info('Received deep link: $uri');
 
-    // Check if this is a callback URI
-    // The redirectUrl in tenant_config.json is in the format "com.sayvant.vox://callback"
-    if (uri.host == 'callback') {
+    // For web platform, we handle any URI
+    // For mobile, we specifically look for the callback host
+    bool isValidCallback = _isWeb || uri.host == 'callback';
+
+    if (isValidCallback) {
       // Check if we have a session cookie parameter
       final sessionCookie = uri.queryParameters['session_cookie'];
       
@@ -170,19 +199,31 @@ class AuthService {
     // Build the EasyAuth URL
     final baseUrl = 'https://$tenantDomain/.auth/login/$tenantType';
     
-    // Use the provided redirectUrl or fall back to the default
-    final backendRedirectUrl = 'https://$tenantDomain/mobile-redirect';
+    // Default backend redirect URL
+    String backendRedirectUrl = 'https://$tenantDomain/mobile-redirect';
     
-    // Log the redirect URL being used
-    logger.info('Using app redirect URL from config: $redirectUrl');
-    
-    // Parse the redirect URL to extract the scheme and host for deep link handling
-    if (redirectUrl != null) {
+    // For web platform, we need a different approach to handle redirects
+    if (_isWeb && redirectUrl != null) {
       try {
-        final redirectUri = Uri.parse(redirectUrl);
-        logger.info('Parsed redirect URI - scheme: ${redirectUri.scheme}, host: ${redirectUri.host}');
+        // For web, we want the backend to redirect back to our web app
+        // We'll use the current URL as the post_login_redirect_url
+        backendRedirectUrl = redirectUrl;
+        logger.info('Using web redirect flow with URL: $backendRedirectUrl');
       } catch (e) {
-        logger.warning('Failed to parse redirect URL: $redirectUrl', error: e);
+        logger.warning('Failed to parse web redirect URL: $redirectUrl', error: e);
+      }
+    } else {
+      // Log the redirect URL being used for mobile
+      logger.info('Using mobile app redirect URL from config: $redirectUrl');
+      
+      // Parse the redirect URL to extract the scheme and host for deep link handling
+      if (redirectUrl != null) {
+        try {
+          final redirectUri = Uri.parse(redirectUrl);
+          logger.info('Parsed redirect URI - scheme: ${redirectUri.scheme}, host: ${redirectUri.host}');
+        } catch (e) {
+          logger.warning('Failed to parse redirect URL: $redirectUrl', error: e);
+        }
       }
     }
     
@@ -198,15 +239,26 @@ class AuthService {
       final authUrl = _buildLoginUrl(tenantDomain, tenantType, redirectUrl);
       logger.info('Launching auth URL: $authUrl');
       
-      // Launch the URL in an external browser
+      // Launch the URL based on platform
       final uri = Uri.parse(authUrl);
-      if (await canLaunchUrl(uri)) {
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
-        return true;
+      
+      if (_isWeb) {
+        // For web, we use a different launch mode that works better with web auth flows
+        // This will navigate in the current tab, which is more appropriate for web auth
+        if (await canLaunchUrl(uri)) {
+          await launchUrl(uri, webOnlyWindowName: '_self');
+          return true;
+        }
       } else {
-        logger.error('Cannot launch URL: $authUrl');
-        return false;
+        // For mobile, launch in external browser as before
+        if (await canLaunchUrl(uri)) {
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+          return true;
+        }
       }
+      
+      logger.error('Cannot launch URL: $authUrl');
+      return false;
     } catch (e) {
       logger.error('Error launching login URL', error: e);
       return false;
@@ -225,7 +277,9 @@ class AuthService {
 
   /// Clean up resources
   void dispose() {
-    _deepLinkSubscription?.cancel();
+    if (!_isWeb) {
+      _deepLinkSubscription?.cancel();
+    }
     _isInitialized = false;
   }
 }

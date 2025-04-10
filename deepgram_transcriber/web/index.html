@@ -18,7 +18,7 @@
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
+  <meta name="description" content="A Flutter app that uses Deepgram for real-time transcription.">
 
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
@@ -29,10 +29,64 @@
   <!-- Favicon -->
   <link rel="icon" type="image/png" href="favicon.png"/>
 
-  <title>deepgram_transcriber</title>
+  <title>Deepgram Transcriber</title>
   <link rel="manifest" href="manifest.json">
 </head>
 <body>
+  <!-- Script to handle authentication redirects for web -->
+  <script>
+    // Function to parse URL parameters from both query string and hash fragment
+    function parseUrlParams() {
+      const params = {};
+      
+      // Parse query parameters
+      const queryString = window.location.search.substring(1);
+      if (queryString) {
+        const pairs = queryString.split('&');
+        for (let i = 0; i < pairs.length; i++) {
+          const pair = pairs[i].split('=');
+          if (pair.length === 2) {
+            params[decodeURIComponent(pair[0])] = decodeURIComponent(pair[1] || '');
+          }
+        }
+      }
+      
+      // Parse hash parameters (common in OAuth flows)
+      const hashString = window.location.hash.substring(1);
+      if (hashString) {
+        const pairs = hashString.split('&');
+        for (let i = 0; i < pairs.length; i++) {
+          const pair = pairs[i].split('=');
+          if (pair.length === 2) {
+            params[decodeURIComponent(pair[0])] = decodeURIComponent(pair[1] || '');
+          }
+        }
+      }
+      
+      return params;
+    }
+
+    // Process authentication parameters
+    const urlParams = parseUrlParams();
+    
+    // Check for authentication tokens
+    const hasSessionCookie = urlParams.hasOwnProperty('session_cookie');
+    const hasIdToken = urlParams.hasOwnProperty('id_token');
+    const hasAccessToken = urlParams.hasOwnProperty('access_token');
+    
+    // If we have authentication tokens, pass them to the Flutter app
+    if (hasSessionCookie || hasIdToken || hasAccessToken) {
+      console.log('Authentication tokens detected in URL');
+      
+      // Clean the URL to remove sensitive tokens
+      if (window.history && window.history.replaceState) {
+        // Keep the tokens in the URL for the Flutter app to process
+        // The Flutter app will handle them and then we can clean up
+        console.log('Keeping tokens in URL for Flutter app to process');
+      }
+    }
+  </script>
+  
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>

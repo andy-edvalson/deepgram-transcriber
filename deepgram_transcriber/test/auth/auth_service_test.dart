@@ -1,8 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mockito/mockito.dart';
 import 'package:mockito/annotations.dart';
 import 'package:http/http.dart' as http;
-import 'dart:async';
 
 import 'package:deepgram_transcriber/auth/auth_service.dart';
 
@@ -38,12 +36,6 @@ void main() {
     });
 
     test('logout should clear session cookie and update auth state', () {
-      // Set up a listener to verify the auth state changes
-      bool? authStateChanged;
-      authService.authStateNotifier.addListener(() {
-        authStateChanged = authService.authStateNotifier.value;
-      });
-
       // Call logout
       authService.logout();
 

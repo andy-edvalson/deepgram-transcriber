@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart';
 import '../auth/auth_service.dart';
 import '../app_logger.dart';
 
@@ -95,7 +96,15 @@ class _TenantSelectionScreenState extends State<TenantSelectionScreen> {
       }
       
       // Get the redirectUrl from tenant data
-      final String? redirectUrl = tenantData['redirectUrl'] as String?;
+      String? redirectUrl = tenantData['redirectUrl'] as String?;
+      
+      // For web platform, we need to modify the redirect URL
+      if (kIsWeb) {
+        // Use the current URL as the redirect URL for web
+        // This will make the auth service redirect back to our web app
+        redirectUrl = Uri.base.toString();
+        logger.info('Using web redirect URL: $redirectUrl');
+      }
       
       // Log the hostname and redirect URL being used
       logger.info('Using hostname: $cleanHostname and redirect URL: $redirectUrl for tenant: $tenantDomain');
@@ -128,8 +137,12 @@ class _TenantSelectionScreenState extends State<TenantSelectionScreen> {
         );
       } else {
         // Show a message that the browser has been launched
+        const message = kIsWeb 
+            ? 'Redirecting to login page...'
+            : 'Login page opened in browser. Please complete authentication.';
+        
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Login page opened in browser. Please complete authentication.')),
+          const SnackBar(content: Text(message)),
         );
       }
     } catch (e) {
